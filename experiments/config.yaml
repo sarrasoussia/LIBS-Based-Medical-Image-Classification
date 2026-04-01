@@ -1,0 +1,36 @@
+seed: 42
+
+model:
+  name: baseline_cnn
+  pretrained: true
+  adapt_for_small_inputs: true
+
+dataset:
+  name: pathmnist
+  train_fraction: 1.0
+
+paths:
+  data_dir: ./data
+  results_dir: ./experiments/results
+  checkpoints_dir: ./experiments/results/checkpoints
+
+training:
+  batch_size: 64
+  num_workers: 0
+  epochs: 50
+  learning_rate: 0.001
+  weight_decay: 0.0001
+  early_stopping_patience: 7
+
+ga:
+  enabled: true
+  include_higher_order: true
+
+experiments:
+  run_models: [baseline_cnn, ga_cnn, densenet121, ga_densenet121]
+
+study:
+  enabled: false
+  datasets: [pathmnist, pcam]
+  seeds: [13, 42, 101, 202, 777]
+  train_fractions: [0.25, 0.50, 0.75, 1.0]

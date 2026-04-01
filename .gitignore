@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data artifacts
+data/*.npz
+
+# Training artifacts
+experiments/results/
+*.pt
+
+# OS/editor
+.DS_Store
+.vscode/
