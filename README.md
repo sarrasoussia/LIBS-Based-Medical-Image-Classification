@@ -183,3 +183,4 @@ Grad-CAM is applied to both models to compare spatial attention and focus consis
 - Deterministic settings are enabled for PyTorch backends.
 - Hyperparameters are centralized in [experiments/config.yaml](experiments/config.yaml).
 # GA-Based-Representation-for-Image-Based-Learning-in-Medical-Imaging
+# GA-Based-Representation-for-Image-Based-Learning-in-Medical-Imaging
