@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import time
 from typing import List
 
 import medmnist
@@ -44,6 +45,19 @@ def _build_class_names(info_dict: dict) -> List[str]:
     return [labels[str(i)] for i in range(len(labels))]
 
 
+def _target_to_class_index(label) -> int:
+    """Convert MedMNIST/PCAM labels to a scalar class index safely.
+
+    MedMNIST labels can come as numpy arrays of shape (1,). We always squeeze
+    and convert to Python int here so the DataLoader collate step builds a clean
+    integer tensor batch.
+    """
+    arr = np.asarray(label).squeeze()
+    if np.asarray(arr).size != 1:
+        raise ValueError(f"Expected scalar label after squeeze, got shape={np.asarray(label).shape}")
+    return int(arr)
+
+
 def get_medmnist_dataloaders(
     dataset_name: str,
     data_dir: str,
@@ -52,6 +66,8 @@ def get_medmnist_dataloaders(
     normalize: bool = True,
     seed: int = 42,
     train_fraction: float = 1.0,
+    download_retries: int = 3,
+    retry_delay_seconds: float = 3.0,
 ) -> DataLoaders:
     """Create train/val/test loaders for a MedMNIST dataset or PCam.
 
@@ -59,11 +75,63 @@ def get_medmnist_dataloaders(
     """
     dataset_name = dataset_name.lower()
 
+    def _init_with_retry(factory, split_name: str):
+        last_error: Exception | None = None
+        attempts = max(1, int(download_retries))
+        for attempt in range(1, attempts + 1):
+            try:
+                return factory(download=True)
+            except Exception as exc:
+                last_error = exc
+                # If data is already present locally, try without download.
+                try:
+                    return factory(download=False)
+                except Exception:
+                    pass
+
+                if attempt < attempts:
+                    print(
+                        f"[data] Download failed for dataset='{dataset_name}' split='{split_name}' "
+                        f"(attempt {attempt}/{attempts}): {exc}. Retrying in {retry_delay_seconds:.1f}s..."
+                    )
+                    time.sleep(max(0.0, float(retry_delay_seconds)))
+
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("Unexpected dataset initialization failure.")
+
     if dataset_name == "pcam":
         transform = build_medmnist_transforms(n_channels=3, normalize=normalize)
-        train_dataset = PCAM(root=data_dir, split="train", transform=transform, download=True)
-        val_dataset = PCAM(root=data_dir, split="val", transform=transform, download=True)
-        test_dataset = PCAM(root=data_dir, split="test", transform=transform, download=True)
+        train_dataset = _init_with_retry(
+            lambda download: PCAM(
+                root=data_dir,
+                split="train",
+                transform=transform,
+                target_transform=_target_to_class_index,
+                download=download,
+            ),
+            split_name="train",
+        )
+        val_dataset = _init_with_retry(
+            lambda download: PCAM(
+                root=data_dir,
+                split="val",
+                transform=transform,
+                target_transform=_target_to_class_index,
+                download=download,
+            ),
+            split_name="val",
+        )
+        test_dataset = _init_with_retry(
+            lambda download: PCAM(
+                root=data_dir,
+                split="test",
+                transform=transform,
+                target_transform=_target_to_class_index,
+                download=download,
+            ),
+            split_name="test",
+        )
         class_names = ["normal", "tumor"]
         in_channels = 3
         num_classes = 2
@@ -75,12 +143,35 @@ def get_medmnist_dataloaders(
         )
         dataset_cls = getattr(medmnist, info["python_class"])
 
-        train_dataset = dataset_cls(
-            split="train", transform=transform, download=True, root=data_dir
+        train_dataset = _init_with_retry(
+            lambda download: dataset_cls(
+                split="train",
+                transform=transform,
+                target_transform=_target_to_class_index,
+                download=download,
+                root=data_dir,
+            ),
+            split_name="train",
         )
-        val_dataset = dataset_cls(split="val", transform=transform, download=True, root=data_dir)
-        test_dataset = dataset_cls(
-            split="test", transform=transform, download=True, root=data_dir
+        val_dataset = _init_with_retry(
+            lambda download: dataset_cls(
+                split="val",
+                transform=transform,
+                target_transform=_target_to_class_index,
+                download=download,
+                root=data_dir,
+            ),
+            split_name="val",
+        )
+        test_dataset = _init_with_retry(
+            lambda download: dataset_cls(
+                split="test",
+                transform=transform,
+                target_transform=_target_to_class_index,
+                download=download,
+                root=data_dir,
+            ),
+            split_name="test",
         )
         class_names = _build_class_names(info)
         in_channels = info["n_channels"]
@@ -104,27 +195,32 @@ def get_medmnist_dataloaders(
 
     use_pin_memory = not torch.backends.mps.is_available()
 
+    loader_common_kwargs = {
+        "num_workers": num_workers,
+        "pin_memory": use_pin_memory,
+    }
+    if num_workers > 0:
+        loader_common_kwargs["persistent_workers"] = True
+        loader_common_kwargs["prefetch_factor"] = 2
+
     train_loader = DataLoader(
         train_dataset,
         batch_size=batch_size,
         shuffle=True,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory,
+        **loader_common_kwargs,
         generator=generator,
     )
     val_loader = DataLoader(
         val_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory,
+        **loader_common_kwargs,
     )
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        num_workers=num_workers,
-        pin_memory=use_pin_memory,
+        **loader_common_kwargs,
     )
 
     return DataLoaders(
@@ -158,8 +254,26 @@ def get_pathmnist_dataloaders(
 
 
 def labels_to_long(labels: torch.Tensor) -> torch.Tensor:
-    """Convert MedMNIST labels shape [B, 1] to [B] long tensor."""
-    return labels.view(-1).long()
+    """Convert labels to class-index tensor shape [B] with strict checks."""
+    if torch.is_tensor(labels):
+        # Avoid unsafe reconstruction paths; keep a detached copy.
+        out = labels.clone().detach()
+    else:
+        out = torch.as_tensor(labels)
+
+    out = out.squeeze()
+    if out.ndim == 0:
+        out = out.unsqueeze(0)
+    elif out.ndim > 1:
+        # Keep one class index per sample if an extra singleton/non-singleton axis appears.
+        out = out.reshape(out.shape[0], -1)[:, 0]
+
+    if out.is_floating_point():
+        if not torch.allclose(out, out.round()):
+            raise ValueError("Label tensor contains non-integer floating values.")
+        out = out.round()
+
+    return out.to(torch.int64).contiguous()
 
 
 def denormalize_image(image: torch.Tensor) -> torch.Tensor:

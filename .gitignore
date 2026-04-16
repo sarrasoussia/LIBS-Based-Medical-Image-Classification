@@ -10,10 +10,16 @@ venv/
 
 # Local data artifacts
 data/*.npz
+data/pcam/
+*.h5
+*.h5.gz
 
 # Training artifacts
 experiments/results/
 *.pt
+
+# Generated notebooks/artifacts
+notebooks/colab_entire_project_code.ipynb
 
 # OS/editor
 .DS_Store

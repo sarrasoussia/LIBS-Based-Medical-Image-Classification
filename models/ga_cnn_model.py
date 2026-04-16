@@ -15,11 +15,13 @@ class GACNN(nn.Module):
         in_channels: int,
         num_classes: int,
         include_higher_order: bool = True,
+        representation_mode: str | None = None,
     ) -> None:
         super().__init__()
         self.ga_encoder = GARepresentation(
             in_channels=in_channels,
             include_higher_order=include_higher_order,
+            representation_mode=representation_mode,
         )
         self.classifier = SimpleCNN(
             in_channels=self.ga_encoder.out_channels,

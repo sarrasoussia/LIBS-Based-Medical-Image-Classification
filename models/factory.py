@@ -11,9 +11,11 @@ def build_model(
     model_name: str,
     in_channels: int,
     num_classes: int,
-    include_higher_order: bool,
-    pretrained: bool,
-    adapt_for_small_inputs: bool,
+    include_higher_order: bool = True,
+    representation_mode: str | None = None,
+    pretrained: bool = True,
+    adapt_for_small_inputs: bool = True,
+    trainable_backbone: bool = True,
 ) -> nn.Module:
     name = model_name.lower()
 
@@ -24,6 +26,7 @@ def build_model(
             in_channels=in_channels,
             num_classes=num_classes,
             include_higher_order=include_higher_order,
+            representation_mode=representation_mode,
         )
     if name == "densenet121":
         return PretrainedDenseNet(
@@ -31,14 +34,17 @@ def build_model(
             num_classes=num_classes,
             pretrained=pretrained,
             adapt_for_small_inputs=adapt_for_small_inputs,
+            trainable_backbone=trainable_backbone,
         )
     if name == "ga_densenet121":
         return GADenseNet121(
             in_channels=in_channels,
             num_classes=num_classes,
             include_higher_order=include_higher_order,
+            representation_mode=representation_mode,
             pretrained=pretrained,
             adapt_for_small_inputs=adapt_for_small_inputs,
+            trainable_backbone=trainable_backbone,
         )
 
     raise ValueError(

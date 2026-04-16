@@ -21,10 +21,14 @@ training:
   learning_rate: 0.001
   weight_decay: 0.0001
   early_stopping_patience: 7
+  pcam_fast:
+    epochs: 20
+    early_stopping_patience: 4
 
 ga:
   enabled: true
   include_higher_order: true
+  representation_mode: full
 
 experiments:
   run_models: [baseline_cnn, ga_cnn, densenet121, ga_densenet121]
@@ -32,5 +36,11 @@ experiments:
 study:
   enabled: false
   datasets: [pathmnist, pcam]
+  seeds: [13, 42, 101, 202, 777]
+  train_fractions: [0.25, 0.50, 0.75, 1.0]
+
+pretrained_study:
+  enabled: true
+  datasets: [bloodmnist, dermamnist]
   seeds: [13, 42, 101, 202, 777]
   train_fractions: [0.25, 0.50, 0.75, 1.0]

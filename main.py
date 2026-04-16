@@ -111,12 +111,15 @@ def main() -> None:
     cfg = _load_config(args.config)
     set_global_seed(cfg["seed"])
 
+    use_mps = os.environ.get("USE_MPS", "1") != "0"
     if torch.cuda.is_available():
         device = torch.device("cuda")
-    elif torch.backends.mps.is_available():
+    elif torch.backends.mps.is_available() and use_mps:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
+        if torch.backends.mps.is_available() and not use_mps:
+            print("Using CPU because USE_MPS=0 was explicitly requested.")
     print(f"Using device: {device}")
 
     if args.study or cfg.get("study", {}).get("enabled", False):
@@ -140,6 +143,12 @@ def main() -> None:
         seed=cfg["seed"],
         train_fraction=train_fraction,
     )
+    print(
+        "Data sanity | "
+        f"dataset={dataset_name} "
+        f"train_size={len(loaders.train.dataset)} val_size={len(loaders.val.dataset)} test_size={len(loaders.test.dataset)} "
+        f"train_batches={len(loaders.train)} val_batches={len(loaders.val)} test_batches={len(loaders.test)}"
+    )
 
     common_train_kwargs = {
         "train_loader": loaders.train,
@@ -162,6 +171,7 @@ def main() -> None:
             in_channels=loaders.in_channels,
             num_classes=loaders.num_classes,
             include_higher_order=cfg["ga"].get("include_higher_order", True),
+            representation_mode=cfg["ga"].get("representation_mode"),
             pretrained=cfg.get("model", {}).get("pretrained", True),
             adapt_for_small_inputs=cfg.get("model", {}).get("adapt_for_small_inputs", True),
         ).to(device)
