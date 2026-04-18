@@ -62,6 +62,7 @@ class SobelFeatureModule(nn.Module):
         self.conv_x.weight.requires_grad_(False)
         self.conv_y.weight.requires_grad_(False)
 
+        self.alpha = nn.Parameter(torch.tensor(1.0))
         self.last_feature_mean = 0.0
         self.last_feature_std = 0.0
 
@@ -76,7 +77,9 @@ class SobelFeatureModule(nn.Module):
             features = torch.cat([gx, gy], dim=1)
         else:
             features = torch.sqrt(gx.pow(2) + gy.pow(2) + self.eps)
-        features = torch.tanh(features / 4.0)
+        std = features.std(dim=(2, 3), keepdim=True) + 1e-6
+        features = features / std
+        features = self.alpha * features
         self.last_feature_mean = float(features.mean().item())
         self.last_feature_std = float(features.std(unbiased=False).item())
         return features
@@ -131,6 +134,8 @@ class LIBSFusionLayer(nn.Module):
         self.last_output_std = 0.0
 
     def forward(self, raw_features: torch.Tensor, sobel_features: torch.Tensor) -> torch.Tensor:
+        raw_features = F.layer_norm(raw_features, raw_features.shape[1:])
+        sobel_features = F.layer_norm(sobel_features, sobel_features.shape[1:])
         fused_input = torch.cat([raw_features, sobel_features], dim=1)
         fused = self.relu(self.bn(self.conv(fused_input)))
         self.last_output_mean = float(fused.mean().item())
@@ -153,9 +158,6 @@ class LIBSFusionLayer(nn.Module):
             "raw_mean_abs_weight": raw_mean_abs,
             "sobel_mean_abs_weight": sobel_mean_abs,
             "sobel_to_raw_importance_ratio": ratio,
-            # compatibility with existing GA analysis keys
-            "ga_mean_abs_weight": sobel_mean_abs,
-            "ga_to_raw_importance_ratio": ratio,
         }
 
 
@@ -180,8 +182,9 @@ class LIBSInputAdapter(nn.Module):
 
         self.use_sobel = bool(use_sobel)
         self.use_fusion = bool(use_fusion)
-        self._ablate_sobel = False
+        self._use_geom_branch = True
         self._last_fusion_output: torch.Tensor | None = None
+        self._has_forward_pass = False
 
         if not self.use_fusion and self.sobel_branch.out_channels != self.raw_branch.out_channels:
             raise ValueError(
@@ -199,15 +202,14 @@ class LIBSInputAdapter(nn.Module):
     def set_use_fusion(self, enabled: bool) -> None:
         self.use_fusion = bool(enabled)
 
-    def set_ga_ablation(self, enabled: bool) -> None:
-        # compatibility with existing evaluation ablation hook
-        self._ablate_sobel = bool(enabled)
+    def set_use_geom_branch(self, enabled: bool) -> None:
+        self._use_geom_branch = bool(enabled)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raw_features = self.raw_branch(x)
-        sobel_features = self.sobel_branch(x)
+        sobel_features = self.sobel_branch(raw_features)
 
-        if self._ablate_sobel or not self.use_sobel:
+        if (not self._use_geom_branch) or (not self.use_sobel):
             sobel_features = torch.zeros_like(sobel_features)
 
         if self.use_fusion and self.use_sobel:
@@ -218,17 +220,24 @@ class LIBSInputAdapter(nn.Module):
             fused = raw_features
 
         self._last_fusion_output = fused
+        self._has_forward_pass = True
         if fused.requires_grad:
             fused.retain_grad()
         return fused
 
     def raw_feature_stats(self) -> tuple[float, float]:
+        if not self._has_forward_pass:
+            raise RuntimeError("raw_feature_stats() called before a forward pass.")
         return self.raw_branch.last_feature_mean, self.raw_branch.last_feature_std
 
     def sobel_feature_stats(self) -> tuple[float, float]:
+        if not self._has_forward_pass:
+            raise RuntimeError("sobel_feature_stats() called before a forward pass.")
         return self.sobel_branch.last_feature_mean, self.sobel_branch.last_feature_std
 
     def fusion_output_stats(self) -> tuple[float, float]:
+        if not self._has_forward_pass:
+            raise RuntimeError("fusion_output_stats() called before a forward pass.")
         return self.fusion_layer.last_output_mean, self.fusion_layer.last_output_std
 
     def last_fusion_grad_norm(self) -> float | None:
@@ -242,9 +251,24 @@ class LIBSInputAdapter(nn.Module):
     def fusion_weight_analysis(self) -> Dict[str, float]:
         return self.fusion_layer.weight_analysis()
 
-    def ga_feature_stats(self) -> tuple[float, float]:
-        # compatibility with existing training logs using GA naming
+    def geometric_feature_stats(self) -> tuple[float, float]:
         return self.sobel_feature_stats()
+
+    def debug_assert_non_zero_features(self, eps: float = 1e-8) -> None:
+        if self._last_fusion_output is None:
+            return
+        raw_mean, raw_std = self.raw_feature_stats()
+        sobel_mean, sobel_std = self.sobel_feature_stats()
+        fusion_mean, fusion_std = self.fusion_output_stats()
+
+        if self.use_sobel and self._use_geom_branch:
+            assert abs(sobel_mean) > eps or sobel_std > eps, (
+                "Geometric (Sobel) branch appears inactive: mean/std are near zero."
+            )
+        if self.use_fusion and self.use_sobel and self._use_geom_branch:
+            assert abs(fusion_mean) > eps or fusion_std > eps, (
+                "Fusion output appears inactive: mean/std are near zero."
+            )
 
 
 class LIBSModel(nn.Module):
@@ -279,8 +303,8 @@ class LIBSModel(nn.Module):
     def set_use_fusion(self, enabled: bool) -> None:
         self.input_adapter.set_use_fusion(enabled)
 
-    def set_ga_ablation(self, enabled: bool) -> None:
-        self.input_adapter.set_ga_ablation(enabled)
+    def set_use_geom_branch(self, enabled: bool) -> None:
+        self.input_adapter.set_use_geom_branch(enabled)
 
     def raw_feature_stats(self) -> tuple[float, float]:
         return self.input_adapter.raw_feature_stats()
@@ -291,8 +315,11 @@ class LIBSModel(nn.Module):
     def fusion_output_stats(self) -> tuple[float, float]:
         return self.input_adapter.fusion_output_stats()
 
-    def ga_feature_stats(self) -> tuple[float, float]:
-        return self.input_adapter.ga_feature_stats()
+    def geometric_feature_stats(self) -> tuple[float, float]:
+        return self.input_adapter.geometric_feature_stats()
+
+    def debug_assert_non_zero_features(self, eps: float = 1e-8) -> None:
+        self.input_adapter.debug_assert_non_zero_features(eps=eps)
 
     def last_fusion_grad_norm(self) -> float | None:
         return self.input_adapter.last_fusion_grad_norm()

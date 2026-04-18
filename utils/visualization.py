@@ -204,10 +204,7 @@ def plot_fusion_behavior(
     models = list(fusion_weight_stats.keys())
     x = np.arange(len(models))
     raw_vals = [fusion_weight_stats[m].get("raw_mean_abs_weight", np.nan) for m in models]
-    geom_vals = [
-        fusion_weight_stats[m].get("sobel_mean_abs_weight", fusion_weight_stats[m].get("ga_mean_abs_weight", np.nan))
-        for m in models
-    ]
+    geom_vals = [fusion_weight_stats[m].get("sobel_mean_abs_weight", np.nan) for m in models]
 
     fig, ax = plt.subplots(figsize=(9, 4.2), dpi=180)
     width = 0.35
@@ -231,8 +228,8 @@ def plot_ablation_bars(ablation_payload: Dict[str, Dict[str, float]], save_path:
     models = list(ablation_payload.keys())
     x = np.arange(len(models))
     width = 0.35
-    with_aux = [ablation_payload[m].get("accuracy_with_ga", np.nan) for m in models]
-    without_aux = [ablation_payload[m].get("accuracy_without_ga", np.nan) for m in models]
+    with_aux = [ablation_payload[m].get("accuracy_full", np.nan) for m in models]
+    without_aux = [ablation_payload[m].get("accuracy_no_geom", np.nan) for m in models]
 
     fig, ax = plt.subplots(figsize=(9, 4.2), dpi=180)
     ax.bar(x - width / 2, with_aux, width=width, label="Full model", color="#ff7f0e")

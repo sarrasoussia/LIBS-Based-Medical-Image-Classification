@@ -60,7 +60,7 @@ def _max_abs_weight(model: nn.Module) -> float:
     return max_abs
 
 
-def _extract_ga_usage_metrics(model: nn.Module) -> Dict[str, float] | None:
+def _extract_fusion_usage_metrics(model: nn.Module) -> Dict[str, float] | None:
     analyzer = getattr(model, "fusion_weight_analysis", None)
     if not callable(analyzer):
         return None
@@ -203,6 +203,10 @@ def _epoch_step(
     fusion_batches = 0
     entropy_total = 0.0
     confidence_total = 0.0
+    fusion_grad_norm_total = 0.0
+    fusion_grad_batches = 0
+    fusion_weight_grad_norm_total = 0.0
+    fusion_weight_grad_batches = 0
     confidence_counts = [0, 0, 0, 0]  # <0.5, [0.5,0.7), [0.7,0.9), >=0.9
     y_true_epoch: list[int] = []
     y_pred_epoch: list[int] = []
@@ -707,8 +711,8 @@ def train_model(
                         "raw_std": float(train_raw_std),
                         "sobel_mean": float(train_sobel_mean),
                         "sobel_std": float(train_sobel_std),
-                        "geometric_mean": float(train_ga_mean),
-                        "geometric_std": float(train_ga_std),
+                        "geometric_mean": float(train_sobel_mean),
+                        "geometric_std": float(train_sobel_std),
                         "fusion_mean": float(train_fusion_mean),
                         "fusion_std": float(train_fusion_std),
                     },
@@ -717,8 +721,8 @@ def train_model(
                         "raw_std": float(val_raw_std),
                         "sobel_mean": float(val_sobel_mean),
                         "sobel_std": float(val_sobel_std),
-                        "geometric_mean": float(val_ga_mean),
-                        "geometric_std": float(val_ga_std),
+                        "geometric_mean": float(val_sobel_mean),
+                        "geometric_std": float(val_sobel_std),
                         "fusion_mean": float(val_fusion_mean),
                         "fusion_std": float(val_fusion_std),
                     },
@@ -743,26 +747,14 @@ def train_model(
             scheduler.step()
         current_lr = float(optimizer.param_groups[0]["lr"])
 
-        print(
+        uses_libs_logging = callable(getattr(model, "sobel_feature_stats", None))
+        log_line = (
             f"[{model_name}] Epoch {epoch:03d}/{epochs} | "
             f"Train Loss: {_format_loss(train_loss)}, Train Acc: {train_acc:.4f} | "
             f"Val Loss: {_format_loss(val_loss)}, Val Acc: {val_acc:.4f} | "
             f"Temp: {current_temperature:.2f} | "
             f"Input mean/std (train): {train_input_mean:.4f}/{train_input_std:.4f} | "
             f"Input mean/std (val): {val_input_mean:.4f}/{val_input_std:.4f} | "
-            f"Raw feat mean/std (train): {train_raw_mean:.4f}/{train_raw_std:.4f} | "
-            f"Raw feat mean/std (val): {val_raw_mean:.4f}/{val_raw_std:.4f} | "
-            f"Sobel feat mean/std (train): {train_sobel_mean:.4f}/{train_sobel_std:.4f} | "
-            f"Sobel feat mean/std (val): {val_sobel_mean:.4f}/{val_sobel_std:.4f} | "
-            f"GA mean/std (train): {train_ga_mean:.4f}/{train_ga_std:.4f} | "
-            f"GA mean/std (val): {val_ga_mean:.4f}/{val_ga_std:.4f} | "
-            f"Fusion mean/std (train): {train_fusion_mean:.4f}/{train_fusion_std:.4f} | "
-            f"Fusion mean/std (val): {val_fusion_mean:.4f}/{val_fusion_std:.4f} | "
-            f"GA grad-norm (train): {train_ga_grad_norm:.4f} | "
-            f"Fusion grad-norm (train): {train_fusion_grad_norm:.4f} | "
-            f"Fusion grad-norm (val): {val_fusion_grad_norm:.4f} | "
-            f"Fusion weight grad-norm (train): {train_fusion_weight_grad_norm:.4f} | "
-            f"Fusion weight grad-norm (val): {val_fusion_weight_grad_norm:.4f} | "
             f"GradNorm: {0.0 if train_grad_norm is None else train_grad_norm:.4f} | "
             f"LR: {current_lr:.6g} | "
             f"Logits mean/std (train): {train_logit_mean:.4f}/{train_logit_std:.4f} | "
@@ -779,6 +771,21 @@ def train_model(
             f"NaN batches % (train/val): {train_nan_batch_pct:.2f}/{val_nan_batch_pct:.2f} | "
             f"Max |W|: {_max_abs_weight(model):.4f}"
         )
+        if uses_libs_logging:
+            log_line += (
+                " | "
+                f"Raw feat mean/std (train): {train_raw_mean:.4f}/{train_raw_std:.4f} | "
+                f"Raw feat mean/std (val): {val_raw_mean:.4f}/{val_raw_std:.4f} | "
+                f"geom_feat mean/std (train): {train_sobel_mean:.4f}/{train_sobel_std:.4f} | "
+                f"geom_feat mean/std (val): {val_sobel_mean:.4f}/{val_sobel_std:.4f} | "
+                f"fusion output mean/std (train): {train_fusion_mean:.4f}/{train_fusion_std:.4f} | "
+                f"fusion output mean/std (val): {val_fusion_mean:.4f}/{val_fusion_std:.4f} | "
+                f"Fusion grad-norm (train): {train_fusion_grad_norm:.4f} | "
+                f"Fusion grad-norm (val): {val_fusion_grad_norm:.4f} | "
+                f"Fusion weight grad-norm (train): {train_fusion_weight_grad_norm:.4f} | "
+                f"Fusion weight grad-norm (val): {val_fusion_weight_grad_norm:.4f}"
+            )
+        print(log_line)
 
         if val_epoch_metrics:
             if debug_sanity_checks:
@@ -797,10 +804,10 @@ def train_model(
                 )
 
         if debug_sanity_checks:
-            if train_ga_std != 0.0 and abs(train_ga_std) < 1e-5:
-                print(f"[{model_name}] WARNING: GA train feature std is near-constant ({train_ga_std:.3e}).")
-            if val_ga_std != 0.0 and abs(val_ga_std) < 1e-5:
-                print(f"[{model_name}] WARNING: GA val feature std is near-constant ({val_ga_std:.3e}).")
+            if train_sobel_std != 0.0 and abs(train_sobel_std) < 1e-5:
+                print(f"[{model_name}] WARNING: geometric train feature std is near-constant ({train_sobel_std:.3e}).")
+            if val_sobel_std != 0.0 and abs(val_sobel_std) < 1e-5:
+                print(f"[{model_name}] WARNING: geometric val feature std is near-constant ({val_sobel_std:.3e}).")
             if train_raw_std != 0.0 and abs(train_raw_std) < 1e-5:
                 print(f"[{model_name}] WARNING: raw train feature std is near-constant ({train_raw_std:.3e}).")
             if val_raw_std != 0.0 and abs(val_raw_std) < 1e-5:
@@ -809,6 +816,16 @@ def train_model(
                 print(f"[{model_name}] WARNING: sobel train feature std is near-constant ({train_sobel_std:.3e}).")
             if val_sobel_std != 0.0 and abs(val_sobel_std) < 1e-5:
                 print(f"[{model_name}] WARNING: sobel val feature std is near-constant ({val_sobel_std:.3e}).")
+
+        # LIBS-specific debug checks for geometry/fusion activity and gradient flow.
+        libs_debug_check_fn = getattr(model, "debug_assert_non_zero_features", None)
+        if callable(libs_debug_check_fn):
+            libs_debug_check_fn(eps=1e-8)
+            if train_fusion_weight_grad_norm <= 0.0:
+                raise RuntimeError(
+                    f"[{model_name}] Fusion layer gradient norm is zero. "
+                    "Gradient flow through the fusion layer appears broken."
+                )
 
         if (
             not torch.isfinite(torch.tensor(train_loss))
@@ -869,23 +886,23 @@ def train_model(
     with open(history_path, "w", encoding="utf-8") as f:
         json.dump(asdict(history), f, indent=2)
 
-    ga_usage_metrics = _extract_ga_usage_metrics(model)
-    if ga_usage_metrics is not None:
-        ga_usage_path = os.path.join(save_dir, f"{model_name}_ga_usage.json")
+    fusion_usage_metrics = _extract_fusion_usage_metrics(model)
+    if fusion_usage_metrics is not None:
+        fusion_usage_path = os.path.join(save_dir, f"{model_name}_fusion_usage.json")
         payload = {
             "model_name": model_name,
             "best_epoch": int(best_epoch),
             "best_val_loss": float(best_val_loss),
-            "fusion_weight_analysis": ga_usage_metrics,
+            "fusion_weight_analysis": fusion_usage_metrics,
         }
-        with open(ga_usage_path, "w", encoding="utf-8") as f:
+        with open(fusion_usage_path, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
         if debug_sanity_checks:
             print(
                 f"[{model_name}] Fusion weight analysis | "
-                f"raw_mean_abs={ga_usage_metrics.get('raw_mean_abs_weight', 0.0):.6f} "
-                f"ga_mean_abs={ga_usage_metrics.get('ga_mean_abs_weight', 0.0):.6f} "
-                f"ga/raw={ga_usage_metrics.get('ga_to_raw_importance_ratio', 0.0):.6f}"
+                f"raw_mean_abs={fusion_usage_metrics.get('raw_mean_abs_weight', 0.0):.6f} "
+                f"sobel_mean_abs={fusion_usage_metrics.get('sobel_mean_abs_weight', 0.0):.6f} "
+                f"sobel/raw={fusion_usage_metrics.get('sobel_to_raw_importance_ratio', 0.0):.6f}"
             )
 
     return model, history, checkpoint_path

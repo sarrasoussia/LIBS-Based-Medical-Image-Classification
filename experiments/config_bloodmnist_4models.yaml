@@ -42,13 +42,7 @@ libs:
   raw_use_conv: false
 
 experiments:
-  # Compare 4 models: baseline_cnn, libs_cnn, densenet121, libs_densenet121
-  skip_completed: true
-  run_models: [baseline_cnn, libs_cnn, densenet121, libs_densenet121]
-
-study:
-  enabled: false
-
-pretrained_study:
-  enabled: false
-  train_fractions: [0.25, 0.50, 0.75, 1.0]
+  datasets: [bloodmnist]
+  run_models: [baseline_cnn, densenet121, libs_cnn, libs_densenet121]
+  seeds: [13, 42, 101, 202, 777]
+  skip_completed: false

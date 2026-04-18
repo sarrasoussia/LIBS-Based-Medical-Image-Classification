@@ -1,2 +1,2 @@
-"""Model modules for baseline and GA-inspired variants."""
+"""Model modules for baseline, pretrained, and LIBS variants."""
 

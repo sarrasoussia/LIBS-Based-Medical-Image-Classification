@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import random
 import time
 from typing import List
 
@@ -328,6 +329,7 @@ def denormalize_image(image: torch.Tensor) -> torch.Tensor:
 
 def set_global_seed(seed: int) -> None:
     """Set random seeds for reproducibility."""
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)

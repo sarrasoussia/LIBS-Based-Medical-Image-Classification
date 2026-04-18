@@ -42,16 +42,7 @@ libs:
   raw_use_conv: false
 
 experiments:
-  run_models: [baseline_cnn, ga_cnn, ga_only_cnn, densenet121, ga_densenet121]
-
-study:
-  enabled: false
-  datasets: [pathmnist, pcam]
+  datasets: [pathmnist, bloodmnist]
+  run_models: [baseline_cnn, densenet121, libs_cnn, libs_densenet121]
   seeds: [13, 42, 101, 202, 777]
-  train_fractions: [0.25, 0.50, 0.75, 1.0]
-
-pretrained_study:
-  enabled: true
-  datasets: [bloodmnist, dermamnist]
-  seeds: [13, 42, 101, 202, 777]
-  train_fractions: [0.25, 0.50, 0.75, 1.0]
+  skip_completed: false

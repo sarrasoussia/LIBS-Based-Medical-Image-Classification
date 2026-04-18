@@ -100,17 +100,28 @@ def evaluate_model(
     save_predictions: bool = True,
     mc_samples: int = 0,
     enable_mc_dropout: bool = False,
-    run_ga_ablation: bool = True,
+    use_geom_branch: bool | None = None,
 ) -> Dict[str, object]:
     model.eval()
 
-    y_true, y_pred, y_conf, y_prob, y_entropy, y_logit_abs, mc_prob_samples = _collect_predictions(
-        model=model,
-        loader=loader,
-        device=device,
-        mc_samples=mc_samples,
-        enable_mc_dropout=enable_mc_dropout,
-    )
+    # Optional evaluation-time ablation while keeping trained weights fixed.
+    set_geom_fn = getattr(model, "set_use_geom_branch", None)
+    geom_state_set = False
+    if use_geom_branch is not None and callable(set_geom_fn):
+        set_geom_fn(bool(use_geom_branch))
+        geom_state_set = True
+
+    try:
+        y_true, y_pred, y_conf, y_prob, y_entropy, y_logit_abs, mc_prob_samples = _collect_predictions(
+            model=model,
+            loader=loader,
+            device=device,
+            mc_samples=mc_samples,
+            enable_mc_dropout=enable_mc_dropout,
+        )
+    finally:
+        if geom_state_set and callable(set_geom_fn):
+            set_geom_fn(True)
 
     metrics = classification_metrics(
         np.array(y_true),
@@ -134,11 +145,14 @@ def evaluate_model(
             "support_analysis": support_report,
         }
     )
+    if "brier_score" in metrics:
+        metrics["brier"] = float(metrics["brier_score"])
+
     metrics["summary_table"] = {
         "accuracy": metrics.get("accuracy"),
         "f1_macro": metrics.get("f1_macro"),
         "ece": metrics.get("ece"),
-        "brier_score": metrics.get("brier_score"),
+        "brier": metrics.get("brier", metrics.get("brier_score")),
         "roc_auc_ovr_macro": metrics.get("roc_auc_ovr_macro"),
     }
     if mc_prob_samples:
@@ -157,62 +171,17 @@ def evaluate_model(
         print(
             "[eval] fusion weights | "
             f"raw_mean_abs={fwa.get('raw_mean_abs_weight', 0.0):.6f} "
-            f"ga_mean_abs={fwa.get('ga_mean_abs_weight', 0.0):.6f} "
-            f"ga/raw={fwa.get('ga_to_raw_importance_ratio', 0.0):.6f}"
+            f"sobel_mean_abs={fwa.get('sobel_mean_abs_weight', 0.0):.6f} "
+            f"sobel/raw={fwa.get('sobel_to_raw_importance_ratio', 0.0):.6f}"
         )
 
-    ablation_fn = getattr(model, "set_ga_ablation", None)
-    if run_ga_ablation and callable(ablation_fn):
-        ablation_fn(True)
-        try:
-            (
-                y_true_abl,
-                y_pred_abl,
-                y_conf_abl,
-                y_prob_abl,
-                y_entropy_abl,
-                y_logit_abs_abl,
-                _,
-            ) = _collect_predictions(
-                model=model,
-                loader=loader,
-                device=device,
-                mc_samples=0,
-                enable_mc_dropout=False,
-            )
-        finally:
-            ablation_fn(False)
-
-        ablated_metrics = classification_metrics(
-            np.array(y_true_abl),
-            np.array(y_pred_abl),
-            np.array(y_conf_abl),
-            y_prob=np.array(y_prob_abl),
-            entropy=np.array(y_entropy_abl),
-            logit_abs=np.array(y_logit_abs_abl),
-        )
-        metrics["ga_ablation"] = {
-            "accuracy_with_ga": float(metrics.get("accuracy", 0.0)),
-            "accuracy_without_ga": float(ablated_metrics.get("accuracy", 0.0)),
-            "accuracy_drop": float(metrics.get("accuracy", 0.0) - ablated_metrics.get("accuracy", 0.0)),
-            "f1_macro_with_ga": float(metrics.get("f1_macro", 0.0)),
-            "f1_macro_without_ga": float(ablated_metrics.get("f1_macro", 0.0)),
-            "f1_macro_drop": float(metrics.get("f1_macro", 0.0) - ablated_metrics.get("f1_macro", 0.0)),
-        }
-        ga_ab = metrics["ga_ablation"]
-        print(
-            "[eval] GA ablation | "
-            f"acc_with={ga_ab.get('accuracy_with_ga', 0.0):.4f} "
-            f"acc_without={ga_ab.get('accuracy_without_ga', 0.0):.4f} "
-            f"drop={ga_ab.get('accuracy_drop', 0.0):.4f}"
-        )
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
     with open(save_path, "w", encoding="utf-8") as f:
         json.dump(metrics, f, indent=2)
 
     csv_path = Path(save_path).with_suffix(".csv")
     flat_rows = []
-    summary_keys = ["accuracy", "f1_macro", "ece", "brier_score", "roc_auc_ovr_macro", "roc_auc_ovr_micro"]
+    summary_keys = ["accuracy", "f1_macro", "ece", "brier", "roc_auc_ovr_macro", "roc_auc_ovr_micro"]
     flat_rows.append({key: metrics.get(key) for key in summary_keys})
     with open(csv_path, "w", encoding="utf-8", newline="") as handle:
         import csv

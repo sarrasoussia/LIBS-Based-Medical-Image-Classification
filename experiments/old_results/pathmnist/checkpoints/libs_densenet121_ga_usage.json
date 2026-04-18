@@ -1,0 +1,12 @@
+{
+  "model_name": "libs_densenet121",
+  "best_epoch": 21,
+  "best_val_loss": 0.5091760477891973,
+  "fusion_weight_analysis": {
+    "raw_mean_abs_weight": 0.32339993119239807,
+    "sobel_mean_abs_weight": 0.03113372065126896,
+    "sobel_to_raw_importance_ratio": 0.09627002868082489,
+    "ga_mean_abs_weight": 0.03113372065126896,
+    "ga_to_raw_importance_ratio": 0.09627002868082489
+  }
+}
