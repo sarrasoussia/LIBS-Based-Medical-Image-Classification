@@ -22,6 +22,7 @@ from utils.visualization import (
     plot_training_curves,
     save_gradcam_grid,
 )
+from utils.report_figures import save_pipeline_diagram
 
 
 def _load_config(config_path: str) -> Dict:
@@ -45,17 +46,35 @@ def _resolve_model_names(cfg: Dict) -> List[str]:
         return [str(name).lower() for name in runs]
 
     model_name = str(cfg.get("model", {}).get("name", "baseline_cnn")).lower()
-    ga_enabled = bool(cfg.get("ga", {}).get("enabled", model_name.startswith("ga_")))
 
-    if model_name == "densenet121":
-        return ["ga_densenet121" if ga_enabled else "densenet121"]
-    if model_name in {"baseline_cnn", "ga_cnn", "ga_densenet121"}:
+    if model_name in {
+        "baseline_cnn",
+        "densenet121",
+        "libs_cnn",
+        "libs_densenet121",
+    }:
         return [model_name]
     raise ValueError(
-        "Unsupported model.name='{}'. Use one of: baseline_cnn, ga_cnn, densenet121".format(
+        "Unsupported model.name='{}'. Use one of: baseline_cnn, densenet121, libs_cnn, libs_densenet121".format(
             model_name
         )
     )
+
+
+def _count_parameters(model: torch.nn.Module) -> tuple[int, int]:
+    trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    total = sum(p.numel() for p in model.parameters())
+    return trainable, total
+
+
+def _display_model_name(model_name: str) -> str:
+    mapping = {
+        "baseline_cnn": "Baseline CNN",
+        "libs_cnn": "LIBS-CNN",
+        "densenet121": "DenseNet121",
+        "libs_densenet121": "LIBS-DenseNet121",
+    }
+    return mapping.get(model_name, model_name)
 
 
 def _run_gradcam(
@@ -118,8 +137,6 @@ def main() -> None:
         device = torch.device("mps")
     else:
         device = torch.device("cpu")
-        if torch.backends.mps.is_available() and not use_mps:
-            print("Using CPU because USE_MPS=0 was explicitly requested.")
     print(f"Using device: {device}")
 
     if args.study or cfg.get("study", {}).get("enabled", False):
@@ -132,6 +149,7 @@ def main() -> None:
     ckpt_dir = os.path.join(outputs_dir, "checkpoints")
     os.makedirs(outputs_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
+    save_pipeline_diagram(os.path.join(outputs_dir, "pipeline_baseline_vs_libs.png"))
 
     train_fraction = float(cfg.get("dataset", {}).get("train_fraction", 1.0))
     loaders = get_medmnist_dataloaders(
@@ -143,13 +161,6 @@ def main() -> None:
         seed=cfg["seed"],
         train_fraction=train_fraction,
     )
-    print(
-        "Data sanity | "
-        f"dataset={dataset_name} "
-        f"train_size={len(loaders.train.dataset)} val_size={len(loaders.val.dataset)} test_size={len(loaders.test.dataset)} "
-        f"train_batches={len(loaders.train)} val_batches={len(loaders.val)} test_batches={len(loaders.test)}"
-    )
-
     common_train_kwargs = {
         "train_loader": loaders.train,
         "val_loader": loaders.val,
@@ -159,12 +170,36 @@ def main() -> None:
         "learning_rate": cfg["training"]["learning_rate"],
         "weight_decay": cfg["training"]["weight_decay"],
         "early_stopping_patience": cfg["training"]["early_stopping_patience"],
+        "optimizer_name": cfg.get("training", {}).get("optimizer", {}).get("name", "adam"),
+        "optimizer_momentum": float(cfg.get("training", {}).get("optimizer", {}).get("momentum", 0.9)),
+        "optimizer_adam_beta1": float(cfg.get("training", {}).get("optimizer", {}).get("adam_beta1", 0.9)),
+        "optimizer_adam_beta2": float(cfg.get("training", {}).get("optimizer", {}).get("adam_beta2", 0.999)),
+        "scheduler_name": cfg.get("training", {}).get("scheduler", {}).get("name", "cosine"),
+        "scheduler_step_size": int(cfg.get("training", {}).get("scheduler", {}).get("step_size", 10)),
+        "scheduler_gamma": float(cfg.get("training", {}).get("scheduler", {}).get("gamma", 0.1)),
+        "min_learning_rate": float(cfg.get("training", {}).get("scheduler", {}).get("min_lr", 1e-6)),
+        "logit_temperature_start": float(cfg.get("training", {}).get("logit_temperature", {}).get("start", 1.0)),
+        "logit_temperature_end": float(cfg.get("training", {}).get("logit_temperature", {}).get("end", 1.0)),
+        "auto_resume": bool(cfg.get("training", {}).get("auto_resume", False)),
     }
 
     model_names = _resolve_model_names(cfg)
+    skip_completed = bool(cfg.get("experiments", {}).get("skip_completed", False))
     comparison = {}
 
     for model_name in model_names:
+        artifact_name = _artifact_model_name(model_name)
+        display_name = _display_model_name(model_name)
+        metrics_path = os.path.join(outputs_dir, f"{artifact_name}_metrics.json")
+        if skip_completed and os.path.exists(metrics_path):
+            print(f"\n=== Skipping already completed model: {model_name} ===")
+            with open(metrics_path, "r", encoding="utf-8") as f:
+                existing_metrics = json.load(f)
+            comparison[model_name] = {
+                k: existing_metrics[k] for k in existing_metrics if k != "confusion_matrix"
+            }
+            continue
+
         print(f"\n=== Running model: {model_name} on dataset: {dataset_name} ===")
         model = build_model(
             model_name=model_name,
@@ -174,8 +209,12 @@ def main() -> None:
             representation_mode=cfg["ga"].get("representation_mode"),
             pretrained=cfg.get("model", {}).get("pretrained", True),
             adapt_for_small_inputs=cfg.get("model", {}).get("adapt_for_small_inputs", True),
+            ga_normalize_output=cfg.get("ga", {}).get("normalize_output", False),
+            libs_use_sobel=bool(cfg.get("libs", {}).get("use_sobel", True)),
+            libs_use_fusion=bool(cfg.get("libs", {}).get("use_fusion", True)),
+            libs_sobel_mode=str(cfg.get("libs", {}).get("sobel_mode", "magnitude")),
+            libs_raw_use_conv=bool(cfg.get("libs", {}).get("raw_use_conv", False)),
         ).to(device)
-
         model, hist, _ = train_model(
             model=model,
             model_name=model_name,
@@ -183,28 +222,28 @@ def main() -> None:
         )
         plot_training_curves(
             history=asdict(hist),
-            save_path=os.path.join(outputs_dir, f"{model_name}_training_curves.png"),
-            title=model_name,
+            save_path=os.path.join(outputs_dir, f"{artifact_name}_training_curves.png"),
+            title=display_name,
         )
 
         metrics = evaluate_model(
             model=model,
             loader=loaders.test,
             device=device,
-            save_path=os.path.join(outputs_dir, f"{model_name}_metrics.json"),
+            save_path=metrics_path,
         )
         plot_confusion_matrix(
             cm=np.array(metrics["confusion_matrix"]),
             class_names=loaders.class_names,
-            save_path=os.path.join(outputs_dir, f"{model_name}_confusion_matrix.png"),
-            title=f"{model_name} - Confusion Matrix",
+            save_path=os.path.join(outputs_dir, f"{artifact_name}_confusion_matrix.png"),
+            title=f"{display_name} - Confusion Matrix",
         )
         _run_gradcam(
             model=model,
             loader=loaders.test,
             device=device,
-            save_path=os.path.join(outputs_dir, f"{model_name}_gradcam.png"),
-            title=f"{model_name} Grad-CAM",
+            save_path=os.path.join(outputs_dir, f"{artifact_name}_gradcam.png"),
+            title=f"{display_name} Grad-CAM",
         )
 
         comparison[model_name] = {k: metrics[k] for k in metrics if k != "confusion_matrix"}

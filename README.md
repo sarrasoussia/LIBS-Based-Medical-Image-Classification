@@ -34,7 +34,13 @@ Input tensor $(B, C, H, W)$ is transformed to enriched channels:
   - Gradient magnitude: $\sqrt{\partial_x^2 + \partial_y^2}$
   - Local orientation: $\mathrm{atan2}(\partial_y, \partial_x)$
 
-Output is concatenated as a **multivector-inspired tensor** and then passed to the same CNN architecture.
+Output is concatenated as a **multivector-inspired tensor** and fused with raw input by a learnable layer:
+
+$$
+	ext{fusion}(x, g)=\operatorname{ReLU}(\operatorname{BN}(\operatorname{Conv}_{1\times1}([x\,\|\,g])))
+$$
+
+This preserves GA channels up to fusion time (no fixed/destructive projection before the model backbone).
 
 ### Formal encoding specification
 
@@ -143,6 +149,11 @@ Saved under [experiments/results](experiments/results):
 - `*_gradcam.png`
 - `model_comparison.png`
 - `comparison_summary.json`
+
+For GA models, metrics JSON also contains:
+
+- `fusion_weight_analysis` (mean absolute weights for raw vs GA channels, and GA/raw ratio)
+- `ga_ablation` (accuracy/F1 with GA enabled vs GA-zeroed inference)
 
 `comparison_summary.json` now includes `accuracy`, `precision_macro`, `recall_macro`, `f1_macro`, and `ece`.
 

@@ -48,6 +48,22 @@ class SimpleCNN(nn.Module):
             nn.Linear(64, num_classes),
         )
 
+        self.apply(self._init_weights)
+
+    @staticmethod
+    def _init_weights(module: nn.Module) -> None:
+        if isinstance(module, nn.Conv2d):
+            nn.init.kaiming_normal_(module.weight, mode="fan_out", nonlinearity="relu")
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.BatchNorm2d):
+            nn.init.ones_(module.weight)
+            nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Linear):
+            nn.init.kaiming_normal_(module.weight, nonlinearity="relu")
+            if module.bias is not None:
+                nn.init.zeros_(module.bias)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = self.features(x)
         x = self.pool(x)

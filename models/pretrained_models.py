@@ -5,8 +5,6 @@ import torch.nn as nn
 from torchvision import models
 from torchvision.models import DenseNet121_Weights
 
-from models.ga_representation import GARepresentation
-
 
 class PretrainedDenseNet(nn.Module):
     """DenseNet121 wrapper with configurable input channels and classifier head."""
@@ -55,37 +53,3 @@ class PretrainedDenseNet(nn.Module):
 
     def gradcam_target_layer(self) -> nn.Module:
         return self.model.features.denseblock4
-
-
-class GADenseNet121(nn.Module):
-    """DenseNet121 preceded by GA-inspired input representation."""
-
-    def __init__(
-        self,
-        in_channels: int,
-        num_classes: int,
-        include_higher_order: bool = True,
-        representation_mode: str | None = None,
-        pretrained: bool = True,
-        adapt_for_small_inputs: bool = True,
-        trainable_backbone: bool = True,
-    ) -> None:
-        super().__init__()
-        self.ga_encoder = GARepresentation(
-            in_channels=in_channels,
-            include_higher_order=include_higher_order,
-            representation_mode=representation_mode,
-        )
-        self.backbone = PretrainedDenseNet(
-            in_channels=self.ga_encoder.out_channels,
-            num_classes=num_classes,
-            pretrained=pretrained,
-            adapt_for_small_inputs=adapt_for_small_inputs,
-            trainable_backbone=trainable_backbone,
-        )
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.backbone(self.ga_encoder(x))
-
-    def gradcam_target_layer(self) -> nn.Module:
-        return self.backbone.gradcam_target_layer()

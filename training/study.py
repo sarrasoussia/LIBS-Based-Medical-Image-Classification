@@ -8,10 +8,14 @@ from typing import Dict, List
 import torch
 
 from data.pathmnist import get_medmnist_dataloaders, set_global_seed
-from models.cnn_baseline import BaselineCNN
-from models.ga_cnn_model import GACNN
+from models.factory import build_model
 from training.evaluate import evaluate_model
 from training.train import train_model
+from utils.report_figures import (
+    plot_study_metric_distributions,
+    plot_study_summary_bars,
+    save_pipeline_diagram,
+)
 from utils.statistics import paired_permutation_pvalue, summarize_metric
 
 
@@ -44,9 +48,20 @@ def _run_single_model_pair(
         "learning_rate": cfg["training"]["learning_rate"],
         "weight_decay": cfg["training"]["weight_decay"],
         "early_stopping_patience": cfg["training"]["early_stopping_patience"],
+        "optimizer_name": cfg.get("training", {}).get("optimizer", {}).get("name", "adam"),
+        "optimizer_momentum": float(cfg.get("training", {}).get("optimizer", {}).get("momentum", 0.9)),
+        "optimizer_adam_beta1": float(cfg.get("training", {}).get("optimizer", {}).get("adam_beta1", 0.9)),
+        "optimizer_adam_beta2": float(cfg.get("training", {}).get("optimizer", {}).get("adam_beta2", 0.999)),
+        "scheduler_name": cfg.get("training", {}).get("scheduler", {}).get("name", "cosine"),
+        "scheduler_step_size": int(cfg.get("training", {}).get("scheduler", {}).get("step_size", 10)),
+        "scheduler_gamma": float(cfg.get("training", {}).get("scheduler", {}).get("gamma", 0.1)),
+        "min_learning_rate": float(cfg.get("training", {}).get("scheduler", {}).get("min_lr", 1e-6)),
+        "logit_temperature_start": float(cfg.get("training", {}).get("logit_temperature", {}).get("start", 1.0)),
+        "logit_temperature_end": float(cfg.get("training", {}).get("logit_temperature", {}).get("end", 1.0)),
     }
 
-    baseline = BaselineCNN(
+    baseline = build_model(
+        model_name="baseline_cnn",
         in_channels=loaders.in_channels,
         num_classes=loaders.num_classes,
     ).to(device)
@@ -64,28 +79,28 @@ def _run_single_model_pair(
     with open(os.path.join(run_dir, "baseline_history.json"), "w", encoding="utf-8") as f:
         json.dump(asdict(baseline_hist), f, indent=2)
 
-    ga_model = GACNN(
+    libs_model = build_model(
+        model_name="libs_cnn",
         in_channels=loaders.in_channels,
         num_classes=loaders.num_classes,
-        include_higher_order=cfg["ga"]["include_higher_order"],
     ).to(device)
-    ga_model, ga_hist, _ = train_model(
-        model=ga_model,
-        model_name="ga_cnn",
+    libs_model, libs_hist, _ = train_model(
+        model=libs_model,
+        model_name="libs_cnn",
         **train_kwargs,
     )
-    ga_metrics = evaluate_model(
-        model=ga_model,
+    libs_metrics = evaluate_model(
+        model=libs_model,
         loader=loaders.test,
         device=device,
-        save_path=os.path.join(run_dir, "ga_metrics.json"),
+        save_path=os.path.join(run_dir, "libs_metrics.json"),
     )
-    with open(os.path.join(run_dir, "ga_history.json"), "w", encoding="utf-8") as f:
-        json.dump(asdict(ga_hist), f, indent=2)
+    with open(os.path.join(run_dir, "libs_history.json"), "w", encoding="utf-8") as f:
+        json.dump(asdict(libs_hist), f, indent=2)
 
     return {
-        "baseline": baseline_metrics,
-        "ga_cnn": ga_metrics,
+        "baseline_cnn": baseline_metrics,
+        "libs_cnn": libs_metrics,
     }
 
 
@@ -127,12 +142,12 @@ def run_study(cfg: Dict, device: torch.device) -> None:
                         "dataset": dataset_name,
                         "train_fraction": train_fraction,
                         "seed": seed,
-                        "baseline": {
-                            k: metrics_pair["baseline"][k]
+                        "baseline_cnn": {
+                            k: metrics_pair["baseline_cnn"][k]
                             for k in ["accuracy", "precision_macro", "recall_macro", "f1_macro"]
                         },
-                        "ga_cnn": {
-                            k: metrics_pair["ga_cnn"][k]
+                        "libs_cnn": {
+                            k: metrics_pair["libs_cnn"][k]
                             for k in ["accuracy", "precision_macro", "recall_macro", "f1_macro"]
                         },
                     }
@@ -152,19 +167,39 @@ def run_study(cfg: Dict, device: torch.device) -> None:
                 for r in raw_results
                 if r["dataset"] == dataset_name and abs(r["train_fraction"] - train_fraction) < 1e-9
             ]
-            baseline_vals = {m: [r["baseline"][m] for r in group] for m in metrics}
-            ga_vals = {m: [r["ga_cnn"][m] for r in group] for m in metrics}
+            baseline_vals = {m: [r["baseline_cnn"][m] for r in group] for m in metrics}
+            libs_vals = {m: [r["libs_cnn"][m] for r in group] for m in metrics}
 
             summary[key] = {
                 "n_seeds": len(group),
-                "baseline": {m: summarize_metric(baseline_vals[m]) for m in metrics},
-                "ga_cnn": {m: summarize_metric(ga_vals[m]) for m in metrics},
+                "baseline_cnn": {m: summarize_metric(baseline_vals[m]) for m in metrics},
+                "libs_cnn": {m: summarize_metric(libs_vals[m]) for m in metrics},
                 "paired_permutation_pvalue": {
-                    m: paired_permutation_pvalue(baseline_vals[m], ga_vals[m]) for m in metrics
+                    m: paired_permutation_pvalue(baseline_vals[m], libs_vals[m]) for m in metrics
                 },
             }
 
     with open(os.path.join(root_out, "summary_statistics.json"), "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2)
+
+    figures_dir = os.path.join(root_out, "figures")
+    os.makedirs(figures_dir, exist_ok=True)
+    try:
+        save_pipeline_diagram(os.path.join(figures_dir, "pipeline_baseline_vs_libs.png"))
+        plot_study_metric_distributions(
+            raw_results=raw_results,
+            model_keys=["baseline_cnn", "libs_cnn"],
+            metric_names=["accuracy", "precision_macro", "recall_macro", "f1_macro"],
+            save_path=os.path.join(figures_dir, "seed_metric_distributions.png"),
+        )
+        plot_study_summary_bars(
+            summary=summary,
+            model_keys=["baseline_cnn", "libs_cnn"],
+            metric_names=["accuracy", "precision_macro", "recall_macro", "f1_macro"],
+            save_path=os.path.join(figures_dir, "summary_means_ci95.png"),
+        )
+        print(f"Study figures saved to: {figures_dir}")
+    except Exception as exc:
+        print(f"WARNING: could not generate study figures: {exc}")
 
     print(f"Study complete. Saved to: {root_out}")

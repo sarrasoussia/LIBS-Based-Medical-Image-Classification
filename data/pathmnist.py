@@ -23,6 +23,33 @@ class DataLoaders:
     num_classes: int
 
 
+def _to_float_tensor_01(image) -> torch.Tensor:
+    """Convert image-like input to float32 CHW tensor in [0, 1]."""
+    if torch.is_tensor(image):
+        t = image.detach().clone().to(torch.float32)
+        if t.ndim == 2:
+            t = t.unsqueeze(0)
+        elif t.ndim == 3 and t.shape[0] not in (1, 3):
+            # likely HWC
+            t = t.permute(2, 0, 1)
+        if t.max().item() > 1.0:
+            t = t / 255.0
+        t = torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=0.0)
+        return t.contiguous()
+
+    # Make an explicit writable copy to avoid undefined behavior warnings when
+    # downstream transforms create derived tensors.
+    arr = np.array(image, copy=True)
+    if arr.ndim == 2:
+        arr = arr[..., None]
+    t = torch.from_numpy(arr).to(torch.float32).permute(2, 0, 1)
+    if t.max().item() > 1.0:
+        t = t / 255.0
+    # Defensive sanitization for any upstream corrupted samples.
+    t = torch.nan_to_num(t, nan=0.0, posinf=1.0, neginf=0.0)
+    return t.contiguous()
+
+
 def build_medmnist_transforms(
     n_channels: int,
     normalize: bool = True,
@@ -32,7 +59,7 @@ def build_medmnist_transforms(
     We use a simple and consistent normalization setup for all experiments to
     preserve fairness.
     """
-    transform_steps = [transforms.ToTensor()]
+    transform_steps = [transforms.Lambda(_to_float_tensor_01)]
     if normalize:
         mean = [0.5] * n_channels
         std = [0.5] * n_channels

@@ -6,7 +6,7 @@ model:
   adapt_for_small_inputs: true
 
 dataset:
-  name: pathmnist
+  name: bloodmnist
   train_fraction: 1.0
 
 paths:
@@ -42,16 +42,13 @@ libs:
   raw_use_conv: false
 
 experiments:
-  run_models: [baseline_cnn, ga_cnn, ga_only_cnn, densenet121, ga_densenet121]
+  # Compare 4 models: baseline_cnn, libs_cnn, densenet121, libs_densenet121
+  skip_completed: true
+  run_models: [baseline_cnn, libs_cnn, densenet121, libs_densenet121]
 
 study:
   enabled: false
-  datasets: [pathmnist, pcam]
-  seeds: [13, 42, 101, 202, 777]
-  train_fractions: [0.25, 0.50, 0.75, 1.0]
 
 pretrained_study:
-  enabled: true
-  datasets: [bloodmnist, dermamnist]
-  seeds: [13, 42, 101, 202, 777]
+  enabled: false
   train_fractions: [0.25, 0.50, 0.75, 1.0]
